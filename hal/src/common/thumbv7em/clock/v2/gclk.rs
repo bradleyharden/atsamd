@@ -23,35 +23,59 @@ use super::sources::dfll::Fll;
 /// TODO
 pub type GclkToken<G> = Registers<G>;
 
-/// TODO
+/// Provide a safe register interface for [`Gclk`]s.
+///
+/// This `struct` takes ownership of a [`GenNum`] and provides an API to
+/// access the corresponding registers.
 pub struct Registers<G: GenNum> {
     gen: PhantomData<G>,
 }
 
 impl<G: GenNum> Registers<G> {
-    /// TODO
+    /// Create a new instance of [`Registers`]
+    ///
+    /// # Safety
+    ///
+    /// Users must never create two simulatenous instances of this `struct` with
+    /// the same `GenNum`.
     #[inline]
     unsafe fn new() -> Self {
         Registers { gen: PhantomData }
     }
 
+    /// Used to mask out the correct bit based on [`GenNum`]
     #[inline]
     fn mask(&self) -> u16 {
         1 << G::NUM
     }
 
+    /// Provides the base pointer to the [`Gclk`] registers
+    ///
+    /// # Safety
+    ///
+    /// #TODO
     #[inline]
     fn gclk(&self) -> &RegisterBlock {
         unsafe { &*pac::GCLK::ptr() }
     }
 
-    /// TODO
+    /// Provides a pointer to the individual Generator Control [`GENCTRL`] registers.
+    ///
+    /// Each GCLK 0 to 11 has its own Generator Control `GENCTRL` register controlling
+    /// the settings of that specific generator.
     #[inline]
     fn genctrl(&self) -> &GENCTRL {
         &self.gclk().genctrl[G::NUM]
     }
 
-    /// TODO
+    /// Block until synchronization has completed.
+    ///
+    /// Used for any registers annotated with
+    ///
+    /// * "Write-Synchronized"
+    /// * "Read-Synchronized"
+    ///
+    /// in the Property field
     #[inline]
     fn wait_syncbusy(&self) {
         while self.gclk().syncbusy.read().genctrl().bits() & self.mask() != 0 {}
@@ -67,16 +91,18 @@ impl<G: GenNum> Registers<G> {
     #[inline]
     fn set_div(&mut self, div: Div<G>) {
         match div {
+            // Maximum reach of DIV1 mode is 255 or 65535
             Div::Div(div) => {
                 self.genctrl().modify(|_, w| unsafe {
-                    w.divsel().div1();
-                    w.div().bits(div.as_())
+                    w.div().bits(div.as_());
+                    w.divsel().div1()
                 });
             }
-            Div::Max => {
+            // Maximum reach of DIV2 mode is 512 or 131072
+            Div::DivPow2(div) => {
                 self.genctrl().modify(|_, w| unsafe {
-                    w.divsel().div2();
-                    w.div().bits(0)
+                    w.div().bits(div.as_());
+                    w.divsel().div2()
                 });
             }
         }
@@ -125,7 +151,6 @@ impl<G: GenNum> Registers<G> {
 pub trait GenNum: Sealed {
     const NUM: usize;
     type Div: Copy + AsPrimitive<u16> + AsPrimitive<u32>;
-    const DIV_MAX: u32;
 }
 
 /// TODO
@@ -137,7 +162,6 @@ impl Sealed for Gen0 {}
 impl GenNum for Gen0 {
     const NUM: usize = 0;
     type Div = u8;
-    const DIV_MAX: u32 = 512;
 }
 
 /// TODO
@@ -147,7 +171,6 @@ impl NotGen0 for Gen1 {}
 impl GenNum for Gen1 {
     const NUM: usize = 1;
     type Div = u16;
-    const DIV_MAX: u32 = 131072;
 }
 
 seq!(N in 2..=11 {
@@ -158,7 +181,6 @@ seq!(N in 2..=11 {
     impl GenNum for Gen#N {
         const NUM: usize = N;
         type Div = u8;
-        const DIV_MAX: u32 = 512;
     }
 });
 
@@ -166,16 +188,37 @@ seq!(N in 2..=11 {
 // Div
 //==============================================================================
 
-/// TODO
-/// Represents a generator divider. The division factor is a u8 or u16 value,
+/// Represents a generator divider.
+///
+/// Division is interpreted differently depending on state of `DIVSEL` flag.
+///
+/// In `DIVSEL` mode `DIV1` (value 0) the division factor is directly interpreted from
+/// the `DIV` register.  The division factor is a u8 or u16 value,
 /// depending on the generator. Generator 1 accepts a u16, while all others
 /// accept a u8. The upper bits of the `Div` variant are ignored for generators
-/// other than Generator 1. The `DIVSEL` field can be used to boost the division
-/// factor to a single value above the normal range. Use the `Max` variant to
-/// set the `DIVSEL` field appropriately. See the datasheet for more details.
+/// other than Generator 1. 
+///
+/// In `DIVSEL` mode `DIV2` (value 1) the division factor is calculated as
+///
+/// ```
+/// division_factor = 2.pow(1 + DIV_register)
+/// ```
+///
+/// The maximum division factor for both modes are 131072 for `Gclk` 1 and 512 for
+/// all others.
+///
+/// `DIVSEL` mode `DIV2` is able to reach this maximum division factor value by setting
+/// `DIV` to 8 or 16, since 2.pow(1 + 8) = 512, 2.pow(1 + 16) = 131072 for `Gclk` 1.
+/// `DIVSEL` mode `DIV1` is limited to 65535 for `Gclk` 1 and 255 for all others.
+///
+/// See the datasheet for more details.
 pub enum Div<G: GenNum> {
+    /// For `Gclk` 0 and 2..11: maximum divison 255. `Gclk` 1: 65535
+    /// Using `DIVSEL` mode `DIV1`
     Div(G::Div),
-    Max,
+    /// For `Gclk` 0 and 2..11: maximum divison 512. `Gclk` 1: 131072
+    /// Using `DIVSEL` mode `DIV2`
+    DivPow2(G::Div),
 }
 
 impl<G: GenNum> Clone for Div<G> {
@@ -190,7 +233,7 @@ impl<G: GenNum> Div<G> {
     pub fn as_u32(&self) -> u32 {
         match self {
             Div::Div(div) => div.as_(),
-            Div::Max => G::DIV_MAX,
+            Div::DivPow2(div) => div.as_(),
         }
     }
 }
@@ -224,6 +267,7 @@ where
     src: PhantomData<T>,
     freq: Hertz,
     div: u32,
+    divsel: bool,
 }
 
 impl GclkConfig<Gen0, Fll> {
@@ -234,6 +278,7 @@ impl GclkConfig<Gen0, Fll> {
             src: PhantomData,
             freq: freq.into(),
             div: 1,
+            divsel: false,
         }
     }
 }
@@ -251,12 +296,14 @@ where
     {
         let freq = source.freq();
         let div = 1;
+        let divsel = false;
         token.set_source(T::GCLK_SRC);
         let config = GclkConfig {
             token,
             src: PhantomData,
             freq,
             div,
+            divsel,
         };
         (config, source.lock())
     }
@@ -310,9 +357,26 @@ where
     }
 
     /// TODO
+    /// Calculate the frequency of the `Gclk`
+    ///
+    /// The frequency differ dependent on the value of `DIVSEL`,
+    /// see [Div]
+    ///
+    ///
     #[inline]
     pub fn freq(&self) -> Hertz {
-        Hertz(self.freq.0 / self.div)
+        match self.divsel {
+            false => {
+                // Handle the allowed case with DIV-field set to zero
+                match self.div {
+                    0 => Hertz(self.freq.0),
+                    _ => Hertz(self.freq.0 / self.div)
+                }
+            },
+            true => {
+                Hertz(self.freq.0 / 2_u32.pow(1 + self.div))
+            },
+        }
     }
 
     /// TODO
