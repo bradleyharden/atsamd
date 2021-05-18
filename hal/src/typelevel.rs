@@ -625,6 +625,11 @@
 //! you put back an instance of `P` exactly. The final use of [`Into`] is key
 //! here. It transforms the `SpecificPin` back into `P` itself.
 
+use core::marker::PhantomData;
+use core::ops::{Add, Sub};
+
+use typenum::{Add1, Sub1, Bit, UInt, Unsigned, B1, U0, U1};
+
 mod private {
     /// Super trait used to mark traits with an exhaustive set of
     /// implementations
@@ -633,9 +638,14 @@ mod private {
 
 pub(crate) use private::Sealed;
 
-/// Type-level version of the [None] variant
+/// Type-level version of the [`None`] variant
 pub struct NoneT;
+
 impl Sealed for NoneT {}
+
+//==============================================================================
+// Is
+//==============================================================================
 
 /// Marker trait for type identity
 ///
@@ -695,4 +705,121 @@ macro_rules! __opt_type {
     ($Type:ty) => {
         $Type
     };
+}
+
+//==============================================================================
+// NonZero
+//==============================================================================
+
+/// TODO
+/// Local copy of `NonZero` so the compiler can prove it will never be
+/// implemented for U0.
+pub trait NonZero: Unsigned {}
+
+impl<U: Unsigned, B: Bit> NonZero for UInt<U, B> {}
+
+//==============================================================================
+// Natural
+//==============================================================================
+
+/// TODO
+/// Phantom `Unsigned` typenums, so they can be constructed from generic
+/// parameters
+pub struct Natural<N: Unsigned> {
+    n: PhantomData<N>,
+}
+
+/// TODO
+pub type Zero = Natural<U0>;
+
+/// TODO
+pub type One = Natural<U1>;
+
+impl<N: Unsigned> Sealed for Natural<N> {}
+
+impl<N: Unsigned> Natural<N> {
+    /// TODO
+    pub fn new() -> Self {
+        Natural { n: PhantomData }
+    }
+}
+
+//==============================================================================
+// Count
+//==============================================================================
+
+/// TODO
+/// Compile-time counting
+pub trait Count: Sealed {}
+
+impl<N: Unsigned> Count for Natural<N> {}
+
+//==============================================================================
+// Increment
+//==============================================================================
+
+/// TODO
+pub trait Increment: Count {
+    type Inc: Count;
+    fn inc(self) -> Self::Inc;
+}
+
+impl<N> Increment for Natural<N>
+where
+    N: Unsigned + Add<B1>,
+    Add1<N>: Unsigned,
+{
+    type Inc = Natural<Add1<N>>;
+    fn inc(self) -> Self::Inc {
+        Natural::new()
+    }
+}
+
+//==============================================================================
+// Decrement
+//==============================================================================
+
+/// TODO
+pub trait Decrement: Count {
+    type Dec: Count;
+    fn dec(self) -> Self::Dec;
+}
+
+impl<N> Decrement for Natural<N>
+where
+    N: NonZero + Sub<B1>,
+    Sub1<N>: Unsigned,
+{
+    type Dec = Natural<Sub1<N>>;
+    fn dec(self) -> Self::Dec {
+        Natural::new()
+    }
+}
+
+//==============================================================================
+// GreaterThanOne
+//==============================================================================
+
+pub trait GreaterThanOne {}
+
+impl<U: Unsigned, X: Bit, Y: Bit> GreaterThanOne for UInt<UInt<U, X>, Y> {}
+
+impl<N: Unsigned + GreaterThanOne> GreaterThanOne for Natural<N> {}
+
+//==============================================================================
+// Lockable
+//==============================================================================
+
+pub trait Lockable {
+    type Locked;
+    fn lock(self) -> Self::Locked;
+}
+
+//==============================================================================
+// Unlockable
+//==============================================================================
+
+pub trait Unlockable {
+    type Unlocked;
+    fn unlock(self) -> Self::Unlocked;
 }
